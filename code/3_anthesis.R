@@ -1,0 +1,265 @@
+#########################################################
+######## Modeling wheat anthesis and setting LAG ########
+#########################################################
+
+####### Authors: Vinicius Garnica
+####### Date: Oct, 2024
+
+### Load packages -----------------------------------------------------------------------------------------------
+pacman::p_load(data.table,
+               tidyverse,
+               lubridate,
+               meteor,
+               openmeteo,
+               dplyr,
+               purrr)
+
+
+### Load data sets
+rm(list = ls())
+load("data/rolling_window.RData") 
+load("data/loadings.RData") #the outcome file is the object fa.loadings 
+
+### Formulas ------------------------------------------------------------------------------
+
+veff = function(Temp) {
+  result = numeric(length(Temp))
+  
+  condition1 = Temp < -4 | Temp > 17
+  condition2 = Temp >= -4 & Temp < 3
+  condition3 = Temp >= 3 & Temp < 10
+  condition4 = Temp >= 10 & Temp <= 17
+  
+  result[condition1] = 0
+  result[condition2] = (Temp[condition2] - (-4)) / (3 - (-4))
+  result[condition3] = 1
+  result[condition4] = (17 - Temp[condition4]) / (17 - 10)
+  
+  return(result)
+}
+
+fv = function(vdd, Vbase, Vsat) {
+  result = numeric(length(vdd))
+  
+  condition1 = vdd < Vbase
+  condition2 = vdd >= Vbase & vdd <= Vsat
+  condition3 = vdd > Vsat
+  
+  result[condition1] = 0
+  result[condition2] = (vdd[condition2] - Vbase) / (Vsat - Vbase)
+  result[condition3] = 1
+  
+  return(result)
+}
+
+tt = function(Temp, Tbase, sigma) {
+  result = numeric(length(Temp))
+  
+  condition1 = Temp <= Tbase | Temp > 37
+  condition2 = Temp > Tbase & Temp <= 26
+  condition3 = Temp > 26 & Temp <= 37
+  
+  result[condition1] = 0
+  result[condition2] = 26 * (exp(-((Temp[condition2] - 26) / (2 * sigma))^2))
+  result[condition3] = 26 * (1 - ((Temp[condition3] - 26) / (37 - 26))^2)
+  
+  return(result)
+}
+
+
+fp = function(ph,pbase,popt){
+  result = numeric(length(ph))
+  
+  condition1 = ph < pbase
+  condition2 = ph >= pbase & ph <= popt
+  condition3 = ph > popt
+  
+  result[condition1] = 0
+  result[condition2] = (ph[condition2] - pbase) / (popt - pbase)
+  result[condition3] = 1
+  
+  return(result)
+}
+
+ts = function(Temp, Tbase) {
+  return(sin((pi/2) * (Temp - Tbase) / (26 - Tbase)))
+}
+
+
+### Data wrangling ------------------------------------------------------------------------------
+outcome_list = lapply(c("sev"), function(element) {
+  df = as.data.frame(loadings[[element]])
+  df = tibble::rownames_to_column(df, "SITE")
+  df$VAR = element
+  return(df)
+})
+
+print(outcome_list)
+
+fa_loadings=do.call(rbind, outcome_list) %>% 
+  mutate_at(vars(SITE,VAR),factor)
+
+### Download data ------------------------------------------------------------------------------
+
+dt=read.csv("data/locations.csv")
+
+dt$start_date = as.Date(paste0(dt$year-1,"-10-01"))
+dt$end_date = as.Date(paste0(dt$year,"-05-20"))
+
+
+download_weather_data = function(lat, lon, start_date, end_date) {
+  tryCatch(
+    {
+      weather_history(c(lat, lon),
+                      start = start_date,
+                      end = end_date,
+                      hourly = list("temperature_2m"),
+                      timezone = "auto")
+    },
+    error = function(e) {
+      # Handle any errors gracefully
+      warning(paste("Error occurred for location:", lat, lon, ":", conditionMessage(e)))
+      NULL
+    }
+  )
+}
+
+weather_data_all = list()
+
+for (i in 1:nrow(dt)) {
+  lat = dt$lat[i]
+  lon = dt$lon[i]
+  start_date = dt$start_date[i]
+  end_date = dt$end_date[i]
+
+  
+  weather = download_weather_data(lat, lon, start_date, end_date)
+  
+  if (!is.null(weather)) {
+    weather$site = dt$site[i]
+    
+    weather_data_all[[i]] = weather
+  }
+}
+
+combined_weather = bind_rows(weather_data_all)
+
+daily_weather = combined_weather %>%
+  mutate(date = as.Date(datetime)) %>%
+  group_by(site,date) %>%
+  reframe(T_air=mean(hourly_temperature_2m)) %>%
+  drop_na()
+
+### Remove extra data
+rm(weather_data_all)
+
+### Observed anthesis date ------------------------------------------------------------------------------
+
+anthesis_dates = data.frame(
+  site = c("RW22", "CL22", "MR22", "KS22", "KS23", "KS24", "PY22", "PY23", "SB22", "SB23", "SB24", "LB23", "UN23", "OX23", "AL24", "BE24", "RO24", "LB24"),
+  observed_DATE = as.Date(c("2022-04-13", "2022-04-24", "2022-04-22", "2022-04-17", "2023-04-10", "2024-04-13", "2022-04-20", "2023-04-22", "2022-04-23", "2023-04-14", "2024-04-15", "2023-04-18", "2023-04-20", "2023-04-22", "2024-04-15", "2024-04-13", "2024-04-27", "2024-04-18"))
+)
+
+### Predicted anthesis date ------------------------------------------------------------------------------
+
+# Merge regions in the state to account for average planting date
+
+daily_weather = daily_weather %>% 
+  mutate(Region= case_when(site=="AL24" ~'Piedmont',
+                           str_detect(site, 'KS') ~'Southeastern Plains',
+                           site=="BE24" ~'MACP',
+                           site=="RO24" ~'Piedmont',
+                           site=="OX23" ~'Piedmont',
+                           site=="CL22" ~'Piedmont',
+                           str_detect(site, 'SB') ~ 'Piedmont',
+                           site=="RW22" ~'Southeastern Plains',
+                           str_detect(site, 'UN') ~ 'Piedmont',
+                           str_detect(site, 'MR') ~ 'Piedmont',
+                           str_detect(site, 'LB') ~ 'Southeastern Plains',
+                           str_detect(site, 'PY') ~ 'MACP'))
+
+
+anthesis = daily_weather %>%
+  left_join(.,dt %>% select(site,lat)) %>%
+  mutate(
+    photo = photoperiod(date,lat)) %>%
+  rowwise() %>%
+  filter(!(Region == "Piedmont" & month(date) == 10 & day(date) < 20) &
+           !(Region == "Southeastern Plains" & month(date) == 10 & day(date) < 25)&
+           !(Region == "MACP" & month(date) == 10 & day(date) < 30)) %>%
+  mutate(
+    dtt= tt(T_air,-1.5,6.9),
+    veff = veff(T_air),
+    ts  = ts(T_air,-1.5)
+  ) %>%
+  group_by(site) %>%
+  mutate(
+    att = cumsum(dtt),
+    vdd = cumsum(veff)
+  ) %>% 
+  ungroup() %>%
+  mutate(
+    fv = fv(vdd,5,30),
+    fpa= fp(photo, 11, 20),
+    PVT = 148+(att*fv*fpa*ts)
+  ) %>%
+  group_by(site) %>%
+  filter(PVT >= 500) %>%
+  slice(1) %>%
+  select(site, date) %>%
+  left_join(anthesis_dates, by = "site") %>%
+  rename(predicted_DATE = date) %>% 
+  mutate(predicted_DOY = yday(predicted_DATE),
+         observed_DOY = yday(observed_DATE),
+         diff=predicted_DOY-observed_DOY) %>%
+  rename(SITE = site);anthesis
+
+
+fa_loadings = left_join(fa_loadings,
+                        anthesis)
+
+write.csv(fa_loadings,"results/loading.csv")
+
+### Vizualizing differences ------------------------------------------------------------------------------
+
+fa_loadings %>%
+  filter(VAR=="sev")%>%
+  ggplot() +
+  geom_point(aes(x = SITE, y = diff), group = 1, show.legend = TRUE) +
+  labs(x = "Site", y = "Day of Year") +
+  theme_minimal()
+
+
+### Merging and calcuating LAG ------------------------------------------------------------------------------
+
+### Day of anthesis as anchor point
+window_anthesis = 
+  lapply(lapply(rolling_window, left_join, fa_loadings %>% select(SITE,fa1,fa2,fa3,VAR,predicted_DATE)), function(x) {
+    x %>% 
+      mutate(LAG= as.numeric(predicted_DATE-DATE)) %>% 
+      select(-predicted_DATE)
+  })
+
+
+### Combine data sets with the same window length -------------------------------------------------------------------------------------
+### This is the same as combining data sets with different intra-day periods.
+
+pattern = c("SITE","DATE","DOY","VAR","fa1","fa2","fa3","LAG")
+
+merge_datasets = function(data,lags,pattern) {
+  result = data[[lags[1]]]
+  for (i in lags[-1]) {
+    result = left_join(result, data[[i]], by = pattern)
+  }
+  return(result)
+}
+
+window_sizes = list(c(1, 7, 13, 19, 25), c(2, 8, 14, 20, 26), c(3, 9, 15, 21, 27),
+                     c(4, 10, 16, 22, 28), c(5, 11, 17, 23, 29), c(6, 12, 18, 24, 30))
+
+
+# Combine window data for 'window_sev' and 'window_1000gdd'
+windows =lapply(window_sizes, function(window_size) {merge_datasets(window_anthesis, window_size, pattern)})
+
+### Save --------------------------------------------------------------------------------
+save(windows,file = "data/windows.RData")

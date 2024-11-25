@@ -165,7 +165,7 @@ anthesis_dates = data.frame(
 # Merge regions in the state to account for average planting date
 
 daily_weather = daily_weather %>% 
-  mutate(Region= case_when(site=="AL24" ~'Piedmont',
+  mutate(region= case_when(site=="AL24" ~'Piedmont',
                            str_detect(site, 'KS') ~'Southeastern Plains',
                            site=="BE24" ~'MACP',
                            site=="RO24" ~'Piedmont',
@@ -184,27 +184,22 @@ anthesis = daily_weather %>%
   mutate(
     photo = photoperiod(date,lat)) %>%
   rowwise() %>%
-  filter(!(Region == "Piedmont" & month(date) == 10 & day(date) < 20) &
-           !(Region == "Southeastern Plains" & month(date) == 10 & day(date) < 25)&
-           !(Region == "MACP" & month(date) == 10 & day(date) < 30)) %>%
+  filter(!(region == "Piedmont" & month(date) == 10 & day(date) >= 1 & day(date) < 10) &
+           !(region == "Southeastern Plains" & month(date) == 10 & day(date) >= 1 & day(date) < 20) &
+           !(region == "MACP" & month(date) == 10 & day(date) >= 1 & day(date) < 30)) %>%
   mutate(
-    dtt= tt(T_air,-1.5,6.9),
+    tt= tt(T_air,1.5,7.7),
+    ts  = ts(T_air,1.5),
     veff = veff(T_air),
-    ts  = ts(T_air,-1.5)
+    fpa= fp(photo, 5,20)
   ) %>%
   group_by(site) %>%
   mutate(
-    att = cumsum(dtt),
-    vdd = cumsum(veff)
-  ) %>% 
-  ungroup() %>%
-  mutate(
-    fv = fv(vdd,5,30),
-    fpa= fp(photo, 11, 20),
-    PVT = 148+(att*fv*fpa*ts)
-  ) %>%
-  group_by(site) %>%
-  filter(PVT >= 500) %>%
+    vdd= cumsum(veff),
+    fv = fv(vdd,30,80),
+    PVT = (tt*fv*fpa*ts),
+    aPVT = 148+cumsum(PVT)) %>%
+  filter(aPVT >= 500) %>%
   slice(1) %>%
   select(site, date) %>%
   left_join(anthesis_dates, by = "site") %>%

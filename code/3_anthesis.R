@@ -17,7 +17,7 @@ pacman::p_load(data.table,
 
 ### Load data sets
 rm(list = ls())
-load("data/rolling_window.RData") 
+load("data/fixed_window.RData") 
 load("data/loadings.RData") #the outcome file is the object fa.loadings 
 
 ### Formulas ------------------------------------------------------------------------------
@@ -100,49 +100,71 @@ fa_loadings=do.call(rbind, outcome_list) %>%
   mutate_at(vars(SITE,VAR),factor)
 
 ### Download data ------------------------------------------------------------------------------
-
 dt=read.csv("data/locations.csv")
+dt$start_date = as.Date(paste0(dt$year-1,"-09-15"))
+dt$end_date = as.Date(paste0(dt$year,"-06-01"))
 
-dt$start_date = as.Date(paste0(dt$year-1,"-10-01"))
-dt$end_date = as.Date(paste0(dt$year,"-05-20"))
 
-
-download_weather_data = function(lat, lon, start_date, end_date) {
-  tryCatch(
-    {
-      weather_history(c(lat, lon),
-                      start = start_date,
-                      end = end_date,
-                      hourly = list("temperature_2m"),
-                      timezone = "auto")
-    },
-    error = function(e) {
-      # Handle any errors gracefully
-      warning(paste("Error occurred for location:", lat, lon, ":", conditionMessage(e)))
-      NULL
+### Download function ----------------------------------------------------------------------------
+download_weather_data = function(lat, lon, start_date, end_date, retries = 3) {
+  for (attempt in 1:retries) {
+    
+    # Adjust lat/lon on the second attempt
+    if (attempt == 2) {  # This line is now adjusting coordinates on the second attempt
+      lat = lat + 0.001
+      lon = lon + 0.001
     }
-  )
+    
+    result = tryCatch(
+      {
+        weather_history(
+          c(lat, lon),
+          start = start_date,
+          end = end_date,
+          hourly = list("temperature_2m", "relative_humidity_2m", "precipitation", "et0_fao_evapotranspiration"),
+          timezone = "auto"
+        )
+      },
+      error = function(e) {
+        NULL  
+      }
+    )
+    
+    if (!is.null(result)) return(result)  # Stop retrying if successful
+    
+    Sys.sleep(2)  # Wait 2 seconds before retrying
+  }
+  return(NULL)  # Return NULL if all attempts fail
 }
 
-weather_data_all = list()
+### Download weather dt for each unique site -----------------------------------------------------
+failed_sites = c()  
+weather_list = list()
 
-for (i in 1:nrow(dt)) {
+for (i in seq_len(nrow(dt))) {
+  site = as.character(dt$site[i])
+  
   lat = dt$lat[i]
   lon = dt$lon[i]
   start_date = dt$start_date[i]
   end_date = dt$end_date[i]
-
   
-  weather = download_weather_data(lat, lon, start_date, end_date)
+  # Download weather dt
+  weather = download_weather_data(lat, lon, start_date, end_date, retries = 3)
   
   if (!is.null(weather)) {
-    weather$site = dt$site[i]
-    
-    weather_data_all[[i]] = weather
+    weather$site = site
+    weather_list[[site]] = weather
+  } else {
+    failed_sites[[site]] = site
   }
 }
 
-combined_weather = bind_rows(weather_data_all)
+### Combine all weather dt into one dataframe -------------------------------------------------
+combined_weather = bind_rows(weather_list)
+
+length(unique(combined_weather$site))
+
 
 daily_weather = combined_weather %>%
   mutate(date = as.Date(datetime)) %>%
@@ -151,7 +173,7 @@ daily_weather = combined_weather %>%
   drop_na()
 
 ### Remove extra data
-rm(weather_data_all)
+rm(weather_list)
 
 ### Observed anthesis date ------------------------------------------------------------------------------
 
@@ -167,7 +189,7 @@ anthesis_dates = data.frame(
 daily_weather = daily_weather %>% 
   mutate(region= case_when(site=="AL24" ~'Piedmont',
                            str_detect(site, 'KS') ~'Southeastern Plains',
-                           site=="BE24" ~'MACP',
+                           site=="BE24" ~'Middle Atlantic Coastal Plain',
                            site=="RO24" ~'Piedmont',
                            site=="OX23" ~'Piedmont',
                            site=="CL22" ~'Piedmont',
@@ -176,19 +198,22 @@ daily_weather = daily_weather %>%
                            str_detect(site, 'UN') ~ 'Piedmont',
                            str_detect(site, 'MR') ~ 'Piedmont',
                            str_detect(site, 'LB') ~ 'Southeastern Plains',
-                           str_detect(site, 'PY') ~ 'MACP'))
+                           str_detect(site, 'PY') ~ 'Middle Atlantic Coastal Plain'))
 
 
 anthesis = daily_weather %>%
   left_join(.,dt %>% select(site,lat)) %>%
   mutate(
-    photo = photoperiod(date,lat)) %>%
-  rowwise() %>%
-  filter(!(region == "Piedmont" & month(date) == 10 & day(date) >= 1 & day(date) < 10) &
-           !(region == "Southeastern Plains" & month(date) == 10 & day(date) >= 1 & day(date) < 20) &
-           !(region == "MACP" & month(date) == 10 & day(date) >= 1 & day(date) < 30)) %>%
+    photo = photoperiod(date,lat),
+    filtered = case_when(
+      region == "Piedmont" & !(month(date) %in% c(9)) & (!(month(date)==10 & day(date) < 10)) ~ TRUE,
+      region == "Southeastern Plains" & !(month(date) %in% c(9)) & (!(month(date)==10 & day(date) < 20)) ~ TRUE,
+      region == "Middle Atlantic Coastal Plain" & !(month(date) %in% c(9)) & (!(month(date)==10 & day(date) < 30)) ~ TRUE,
+      TRUE ~ FALSE
+      )) %>%
+  filter(filtered == TRUE) %>%
   mutate(
-    tt= tt(T_air,1.5,7.7),
+    tt= tt(T_air,1.5,7.6),
     ts  = ts(T_air,1.5),
     veff = veff(T_air),
     fpa= fp(photo, 5,20)
@@ -215,7 +240,7 @@ fa_loadings = left_join(fa_loadings,
 
 write.csv(fa_loadings,"results/loading.csv")
 
-### Vizualizing differences ------------------------------------------------------------------------------
+### Visualizing differences ------------------------------------------------------------------------------
 
 fa_loadings %>%
   filter(VAR=="sev")%>%
@@ -225,11 +250,11 @@ fa_loadings %>%
   theme_minimal()
 
 
-### Merging and calcuating LAG ------------------------------------------------------------------------------
+### Merging and calculating LAG ------------------------------------------------------------------------------
 
 ### Day of anthesis as anchor point
 window_anthesis = 
-  lapply(lapply(rolling_window, left_join, fa_loadings %>% select(SITE,fa1,fa2,fa3,VAR,predicted_DATE)), function(x) {
+  lapply(lapply(fixed_window, left_join, fa_loadings %>% select(SITE,fa1,fa2,fa3,VAR,predicted_DATE)), function(x) {
     x %>% 
       mutate(LAG= as.numeric(predicted_DATE-DATE)) %>% 
       select(-predicted_DATE)
@@ -254,7 +279,7 @@ window_sizes = list(c(1, 7, 13, 19, 25), c(2, 8, 14, 20, 26), c(3, 9, 15, 21, 27
 
 
 # Combine window data for 'window_sev' and 'window_1000gdd'
-windows =lapply(window_sizes, function(window_size) {merge_datasets(window_anthesis, window_size, pattern)})
+rolling_windows =lapply(window_sizes, function(window_size) {merge_datasets(window_anthesis, window_size, pattern)})
 
 ### Save --------------------------------------------------------------------------------
-save(windows,file = "data/windows.RData")
+save(rolling_windows,file = "data/rolling_windows.RData")

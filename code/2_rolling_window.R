@@ -91,12 +91,12 @@ remove_nas = function(df) {
   df[complete.cases(df), ]
 }
 
-rolling_window = map(output , ~ map(.x, remove_nas)) %>% 
+fixed_window = map(output , ~ map(.x, remove_nas)) %>% 
   purrr::flatten() 
 
 ### Quality check --------------------------------------------------------------------------------
 
-rolling_window[[30]] %>% # change data sets by changing the number from 1 to 30. There should be one only observation per day
+fixed_window[[30]] %>% # change data sets by changing the number from 1 to 30. There should be one only observation per day
   group_by(DATE, SITE) %>% 
   summarise(n=n()) %>%
   ggplot(aes(x = day(DATE), y = month(DATE), fill = n)) +
@@ -106,4 +106,4 @@ rolling_window[[30]] %>% # change data sets by changing the number from 1 to 30.
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4))
 
 ### Save --------------------------------------------------------------------------------
-save(rolling_window, file = "data/rolling_window.RData")
+save(fixed_window, file = "data/fixed_window.RData")

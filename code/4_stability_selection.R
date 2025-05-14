@@ -15,9 +15,9 @@ library(sharp)
 
 ### Load data sets
 rm(list = ls())
-load("windows.RData")
+load("rolling_windows.RData")
 
-dt=windows
+dt=rolling_windows
 
 ### Set seed
 set.seed(123)

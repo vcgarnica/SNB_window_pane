@@ -3,7 +3,7 @@
 #############################
 
 ####### Author: Vinicius Garnica
-####### Date: June, 2024
+####### Date: Mar, 2025
 
 ### Load packages ------------------------------------------------------------------------------
 pacman::p_load(data.table,
@@ -154,7 +154,7 @@ heatmap_plot = function(data, var1, palette) {
   
   p = ggplot(a, aes(x = LAG, y=reorder(var2,max_consecutive), fill = mean)) +
     geom_tile(color = "white", linewidth = 0.2) +
-    labs(y = NULL,x = "Days relative to anthesis",fill="Mean correlation")+
+    labs(y = NULL,x = "Days relative to anthesis",fill = expression(italic(hat(rho)^"*")))+
     coord_equal(xlim = c(lag_max, lag_min)) +
     facet_grid(col = vars(var1), labeller = label_parsed) + 
     scale_fill_viridis_c(option = "plasma",direction = -1,na.value = palette)+
@@ -291,9 +291,9 @@ ggsave("figures/fa3_total.png", width =25,height =90,units = "in",limitsize = FA
 
 ### Load window pane data ---------------------------------------------------------------------------------------
 
-load('data/windows.RData')
+load('data/rolling_windows.RData')
 
-sev_data=map(windows, ~filter(.x, VAR == 'sev'))
+sev_data=map(rolling_windows, ~filter(.x, VAR == 'sev'))
 
 sev_data=sev_data %>%
   reduce(function(x, y) full_join(x, y, by = c('SITE','DATE','DOY','fa1','fa2','fa3','VAR', 'LAG')))

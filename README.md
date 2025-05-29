@@ -1,7 +1,6 @@
 #  Leveraging window-pane analysis with environmental factor loadings of genotype-by-environment interaction to identify high-resolution weather-based variables associated with plant disease
 
 ## Citation
-This is the source code for our publication submitted to *Agricultural and Forest Meteorology*:  
 
 ```
 @article{garnica202x,
